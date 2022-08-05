@@ -1,23 +1,23 @@
 ## Setting up Jenkins
 
-1. Setup a jenkins instance. For the exercise, I chose to use a container installation following this Jenkins guide : https://www.jenkins.io/doc/book/installing/docker/
+1. Let's setup a jenkins instance via a container installation following this Jenkins guide : https://www.jenkins.io/doc/book/installing/docker/
 
-Following each step of this setup is important to ensure that the Jenkins container has access to the Docker Daemon, which will be important for deployinfg our code as an image.
+Following each step of this setup is important to ensure that the Jenkins container has access to our local Docker Daemon, which will be important for deploying our code as an image.
 
-2. Login to management console. Once connected to the instance on my browser (http://locahost:8080), we can login to the Jenkins management interface with `initialAdminPassword` available within the jenkins container at `/var/jenkins_home/secrets`. After having installing the recommended plugins, we can configure Maven and JDK settings under ** Manage Jenkins > Global Tool Configuration**.
+2. Login to management console. Once connected to the instance on my browser (http://locahost:8080), we can login to the Jenkins management interface with `initialAdminPassword` available within the jenkins container at `/var/jenkins_home/secrets`. After having installed the recommended plugins, we can configure Maven and JDK settings under **Manage Jenkins > Global Tool Configuration**.
 
 ## Setup our pipeline
 
 Once that's done, let's start creating a pipeline in the management console.
 
-I create a new pipeline named `my_pipeline` and configure the definition to be a Pipeline SCM, to pull the source code and pipeline steps from our github repository `https://github.com/hfaivre/spt`, specifying to build only for the main branch. Once that is done, we will need to setup a Jenkinsfile describing our pipeline step.
+We setup a new pipeline named `my_pipeline` and configure the definition to be a Pipeline SCM, to pull the source code and pipeline steps from our github repository `https://github.com/hfaivre/spt`, specifying to build only for the main branch. Once that is done, we will need to setup a Jenkinsfile describing our pipeline step.
 
-Our goal is to have the following steps : 
+Our goal is to have the following stages : 
 1. Compile the Code
 2. Run the tests
 3. Building the Docker image
 4. Pushing the Docker image to Dockerhub
-5. [Bonus] Pushing the docker image to Artifactory
+5. [ Bonus ] Pushing the artifact to Artifactory
 
 To Compile the code and run the tests, we can add these first two stages to the Jenkinsfile : 
 
@@ -46,7 +46,7 @@ pipeline {
 
 Once that is done, let's setup our pipeline for packaging our project in a Docker image.
 
-First we'll install the Docker Pipeline Plugin on Jenkins under **Manage Jenkins > Manage Plugins**, as well as create a global credentials **Manage Jenkins > Manage Credentials** called `dockerhub_id` containing my Dockerhub credentials.
+First we'll install the Docker Pipeline Plugin on Jenkins under **Manage Jenkins > Manage Plugins**, as well as create a global credentials **Manage Jenkins > Manage Credentials** called `dockerhub_id` containing our Dockerhub credentials.
 
 Then we can modify our existing pipeline as follows : 
 
@@ -136,71 +136,33 @@ We can then start the artifactory container :
 $ docker run --name artifactory -v $JFROG_HOME/artifactory/var/:/var/opt/jfrog/artifactory -d -p 8081:8081 -p 8082:8082 releases-docker.jfrog.io/jfrog/artifactory-oss:latest
 ```
 
+We can use the `jfrog cli` to upload our artefacts from our pipeline as follows :
 
-Once that is done, we can install the Artifactory plugin in Jenkins under **Manage Jenkins > Manage Plugins**. Once that's done we can configure the connection with Artifactory under **Manage Jenkins > Configure System **, with the following items : 
-- the Instance ID name as `artifactory`,
-- the Jfrog Platform URL to point to the public IP of the Artifactory container on port 8082, 
-- the username and password used to connect to artifactory
-
-
-
-
-From this point on, I then attempted to modify the Jenkinsfile to add the following steps to push the Docker image to my Artifactory : 
 ```
-pipeline {
-    agent any
-
-    stages {
-        stage ('Clone') {
-            steps {
-                git branch: 'master', url: "https://github.com/hfaivre/spt.git"
-            }
-        }
-
-        stage ('Artifactory configuration') {
-            steps {
-                rtServer (
-                    id: "ARTIFACTORY_SERVER",
-                    url: SERVER_URL,
-                    credentialsId: CREDENTIALS
-                )
-            }
-        }
-
-        stage ('Build docker image') {
-            steps {
-                script {
-                    docker.build(ARTIFACTORY_DOCKER_REGISTRY + '/petclinc:latest', '.')
+stage('Upload to Artifactory') {
+          agent {
+                docker {
+                    image 'releases-docker.jfrog.io/jfrog/jfrog-cli-v2:2.2.0' 
+                    reuseNode true
                 }
-            }
+          }
+          steps {
+            sh 'jfrog rt upload --url http://192.168.1.74:8082/artifactory/ --access-token ${ARTIFACTORY_ACCESS_TOKEN} target/spring-petclinic-2.7.0-SNAPSHOT.jar petclinic/'
+          }
         }
 
-        stage ('Push image to Artifactory') {
-            steps {
-                rtDockerPush(
-                    serverId: "ARTIFACTORY_SERVER",
-                    image: ARTIFACTORY_DOCKER_REGISTRY + '/hello-petclinc:latest',
-                    targetRepo: 'docker-local',
-                    properties: 'project-name=docker1;status=stable'
-                )
-            }
-        }
+```
 
-        stage ('Publish build info') {
-            steps {
-                rtPublishBuildInfo (
-                    serverId: "ARTIFACTORY_SERVER"
-                )
-            }
-        }
-    }
-}
-```
-Note : this requires to add the `SERVER_URL`, `ARTIFACTORY_DOCKER_REGISTRY`, `CREDENTIALS` as parameters of the Jenkins pipeline.
-Unfortunately my pipeline was not able to push the image due to the following error : 
+This allows us to push our selected `jar` snapshot file into the `petclinic` target repository using a docker container running the `jfrog cli`.
 
+Note: 
+- To avoid checkstyle errors at build time regarding the usage an `http` url in the code, we disable checkstyle with the `-Dcheckstyle.skip` option when running `mvn`.
+- We also need to create an access token on Artifactory on store this as a global credentials of type secret key in Jenkins. It is invoked in our step via the environment variable `ARTIFACTORY_ACCESS_TOKEN` : 
 ```
-INFO: Pushing image: docker-artifactory/pet-clinic:latest
-com.github.dockerjava.api.exception.DockerClientException: Could not push image: unauthorized: incorrect username or password
+ARTIFACTORY_ACCESS_TOKEN = credentials('jfrog_token')
 ```
-After having crossed check credentials, I suspect the docker client is not authorized to communicate with the Docker, but I am uncertain why. Maybe this is because of the fact that the repo used `ARTIFACTORY_DOCKER_REGISTRY` was a generic repo (no docker repo available in the free tier) ?
+
+
+
+
+
