@@ -20,7 +20,7 @@ pipeline {
         }
         stage('Test') { 
             steps {
-                sh 'mvn test' 
+                sh 'mvn test -Dcheckstyle.skip' 
             }
         }
         stage('Docker Build') {
